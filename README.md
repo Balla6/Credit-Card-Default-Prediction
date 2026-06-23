@@ -85,6 +85,8 @@ Endpoints:
 - `GET /health` — liveness + whether the model is loaded
 - `POST /predict` — score a single applicant (raw columns as JSON)
 - `POST /predict_batch` — score a list of applicants
+- `POST /explain` — score **and** return the SHAP features driving the
+  decision (per-prediction explainability for regulated credit use)
 
 Example:
 
@@ -97,6 +99,21 @@ curl -X POST http://127.0.0.1:8000/predict \
        "BILL_AMT5":0,"BILL_AMT6":0,"PAY_AMT1":0,"PAY_AMT2":689,"PAY_AMT3":0,
        "PAY_AMT4":0,"PAY_AMT5":0,"PAY_AMT6":0}'
 # -> {"default_proba":0.9208,"default_pred":1,"threshold":0.585}
+```
+
+`POST /explain` returns the same prediction plus the top SHAP contributions in
+log-odds space — a positive `shap_value` pushes toward default, negative away,
+relative to `base_value` (the model's average prediction):
+
+```json
+{
+  "default_proba": 0.9208, "default_pred": 1, "threshold": 0.585,
+  "base_value": 0.0288,
+  "top_features": [
+    {"feature": "PAY_1", "value": 2.0, "shap_value": 0.9682, "direction": "increases"},
+    {"feature": "max_pay_status", "value": 2.0, "shap_value": 0.4592, "direction": "increases"}
+  ]
+}
 ```
 
 All scripts are deterministic (`random_state=42`). Class imbalance is handled

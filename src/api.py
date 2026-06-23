@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import List
 
 import joblib
+import numpy as np
 import pandas as pd
+import shap
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -29,6 +31,7 @@ app = FastAPI(
 )
 
 _bundle: dict | None = None
+_explainer: shap.TreeExplainer | None = None
 
 
 def get_bundle() -> dict:
@@ -82,17 +85,81 @@ class BatchRequest(BaseModel):
     records: List[Applicant]
 
 
+class FeatureContribution(BaseModel):
+    feature: str
+    value: float
+    shap_value: float
+    direction: str  # "increases" or "decreases" default risk
+
+
+class Explanation(BaseModel):
+    default_proba: float
+    default_pred: int
+    threshold: float
+    base_value: float
+    top_features: List[FeatureContribution]
+
+
+def get_explainer() -> shap.TreeExplainer:
+    """Lazily build a TreeExplainer over the fitted gradient-boosted classifier."""
+    global _explainer
+    if _explainer is None:
+        model = get_bundle()["model"]
+        _explainer = shap.TreeExplainer(model.named_steps["clf"])
+    return _explainer
+
+
+def _prepare(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Clean -> drop target -> add engineered features."""
+    df = clean(df_raw).drop(columns=[TARGET], errors="ignore")
+    return add_features(df)
+
+
 def _score(df_raw: pd.DataFrame) -> pd.DataFrame:
     bundle = get_bundle()
     model, threshold = bundle["model"], bundle["threshold"]
-    df = clean(df_raw).drop(columns=[TARGET], errors="ignore")
-    proba = model.predict_proba(add_features(df))[:, 1]
+    proba = model.predict_proba(_prepare(df_raw))[:, 1]
     return pd.DataFrame(
         {
             "default_proba": proba,
             "default_pred": (proba >= threshold).astype(int),
             "threshold": threshold,
         }
+    )
+
+
+def _explain_one(df_raw: pd.DataFrame, top_n: int) -> Explanation:
+    bundle = get_bundle()
+    model, threshold = bundle["model"], bundle["threshold"]
+    X = _prepare(df_raw)
+
+    # Run the preprocessing step the classifier was trained on, then SHAP.
+    prep = model.named_steps["prep"]
+    Xt = prep.transform(X)
+    feat_names = list(prep.get_feature_names_out())
+
+    explainer = get_explainer()
+    shap_vals = explainer.shap_values(Xt)[0]  # single row, log-odds space
+    base = float(np.ravel(explainer.expected_value)[0])
+
+    order = np.argsort(np.abs(shap_vals))[::-1][:top_n]
+    contribs = [
+        FeatureContribution(
+            feature=feat_names[i],
+            value=round(float(np.ravel(Xt[0])[i]), 4),
+            shap_value=round(float(shap_vals[i]), 4),
+            direction="increases" if shap_vals[i] > 0 else "decreases",
+        )
+        for i in order
+    ]
+
+    proba = float(model.predict_proba(X)[0, 1])
+    return Explanation(
+        default_proba=round(proba, 4),
+        default_pred=int(proba >= threshold),
+        threshold=round(float(threshold), 4),
+        base_value=round(base, 4),
+        top_features=contribs,
     )
 
 
@@ -123,3 +190,14 @@ def predict_batch(req: BatchRequest) -> List[Prediction]:
         )
         for r in scored.itertuples()
     ]
+
+
+@app.post("/explain", response_model=Explanation)
+def explain(applicant: Applicant, top_n: int = 8) -> Explanation:
+    """Score an applicant and return the SHAP features driving the decision.
+
+    Each contribution is in log-odds space: a positive ``shap_value`` pushes the
+    prediction toward default, a negative one away from it, relative to the
+    model's ``base_value`` (the average prediction over the training data).
+    """
+    return _explain_one(pd.DataFrame([applicant.model_dump()]), top_n)

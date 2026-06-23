@@ -6,3 +6,6 @@ __pycache__/
 venv/
 outputs/sample_scored.csv
 scored.csv
+
+# Private — never commit (personal interview prep, notes)
+private/
