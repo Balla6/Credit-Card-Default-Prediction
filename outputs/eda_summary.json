@@ -1,0 +1,11 @@
+{
+  "n_rows": 30000,
+  "n_features": 23,
+  "default_rate": 0.2212,
+  "missing_values": 0,
+  "limit_bal_median": 140000.0,
+  "age_range": [
+    21,
+    79
+  ]
+}

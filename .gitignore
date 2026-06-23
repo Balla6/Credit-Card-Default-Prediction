@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.zip
+.ipynb_checkpoints/
+.venv/
+venv/
+outputs/sample_scored.csv
+scored.csv
